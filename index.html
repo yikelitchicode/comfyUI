@@ -1,42 +1,162 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hant">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>comfyUI</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <meta name="theme-color" content="#111315" />
+    <title>ChickenDog Flow</title>
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="hero">
-        <p class="eyebrow">Simple demo project</p>
-        <h1>comfyUI</h1>
-        <p class="lead">
-          A lightweight placeholder site for the comfyUI project. Ready for GitHub,
-          and structured so it can be deployed to Vercel as a static site.
-        </p>
-        <div class="actions">
-          <a class="button primary" href="https://github.com" target="_blank" rel="noreferrer">GitHub</a>
-          <a class="button" href="https://vercel.com" target="_blank" rel="noreferrer">Vercel</a>
+    <div class="app-shell" id="app" aria-busy="true">
+      <header class="topbar">
+        <div class="brand-block">
+          <span class="brand-mark" aria-hidden="true">CD</span>
+          <div>
+            <strong>ChickenDog Flow</strong>
+            <span>API image workflow</span>
+          </div>
         </div>
-      </section>
+        <div class="topbar-actions">
+          <span class="connection-state" id="connection-state" data-state="loading">Connecting</span>
+          <span class="user-label" id="user-label"></span>
+          <button class="icon-button" id="logout-button" type="button" title="登出" aria-label="登出">↪</button>
+        </div>
+      </header>
 
-      <section class="grid">
-        <article class="card">
-          <h2>What’s inside</h2>
-          <ul>
-            <li>Minimal landing page</li>
-            <li>Static asset structure</li>
-            <li>Vercel-ready config</li>
-          </ul>
-        </article>
-        <article class="card">
-          <h2>Status</h2>
-          <p id="status">Loading…</p>
-        </article>
-      </section>
-    </main>
+      <main class="workspace">
+        <section class="workflow-stage" aria-label="Image generation workflow">
+          <div class="stage-toolbar">
+            <div>
+              <strong>Image workflow</strong>
+              <span>Prompt → Provider → Output</span>
+            </div>
+            <button class="secondary-button" id="reset-button" type="button">Reset</button>
+          </div>
 
-    <script src="./app.js"></script>
+          <div class="node-canvas">
+            <div class="workflow-track" aria-hidden="true"></div>
+
+            <article class="workflow-node" data-node="prompt">
+              <header><span>01</span><strong>Prompt</strong></header>
+              <p id="prompt-node-value">Describe the image to create</p>
+              <footer><span class="node-port output-port"></span>Text</footer>
+            </article>
+
+            <article class="workflow-node" data-node="provider">
+              <header><span>02</span><strong>Provider</strong></header>
+              <p id="model-node-value">gpt-image-2</p>
+              <footer><span class="node-port input-port"></span>API image model<span class="node-port output-port"></span></footer>
+            </article>
+
+            <article class="workflow-node output-node" data-node="output">
+              <header><span>03</span><strong>Output</strong></header>
+              <p id="size-node-value">2048 × 2048 · PNG</p>
+              <footer><span class="node-port input-port"></span>Stored in this session</footer>
+            </article>
+          </div>
+
+          <section class="result-surface" aria-live="polite">
+            <div class="result-empty" id="result-empty">
+              <strong>No output yet</strong>
+              <span>Configure the workflow and run it from the inspector.</span>
+            </div>
+            <div class="result-loading" id="result-loading" hidden>
+              <span class="progress-indicator"></span>
+              <strong id="progress-title">Generating image</strong>
+              <span id="progress-detail">The provider is processing this workflow.</span>
+            </div>
+            <figure class="result-figure" id="result-figure" hidden>
+              <img id="result-image" alt="Generated workflow output" />
+              <figcaption>
+                <span id="result-caption"></span>
+                <a class="secondary-button" id="download-link" download="chickendog-flow.png">Download</a>
+              </figcaption>
+            </figure>
+          </section>
+        </section>
+
+        <aside class="inspector" aria-label="Workflow inspector">
+          <div class="inspector-heading">
+            <div>
+              <span>Inspector</span>
+              <strong>Generation settings</strong>
+            </div>
+            <span class="mode-badge">API only</span>
+          </div>
+
+          <form id="generation-form">
+            <label class="field-block">
+              <span>Prompt</span>
+              <textarea id="prompt" name="prompt" maxlength="8000" rows="6" placeholder="A precise product photograph on a clean studio table..." required></textarea>
+              <small><span id="prompt-count">0</span>/8000</small>
+            </label>
+
+            <label class="field-block">
+              <span>Model</span>
+              <select id="model" name="model"></select>
+            </label>
+
+            <div class="field-row">
+              <label class="field-block">
+                <span>Aspect ratio</span>
+                <select id="aspect-ratio" name="aspectRatio">
+                  <option value="1:1">1:1</option>
+                  <option value="16:9">16:9</option>
+                  <option value="9:16">9:16</option>
+                  <option value="4:3">4:3</option>
+                  <option value="3:4">3:4</option>
+                  <option value="3:2">3:2</option>
+                  <option value="2:3">2:3</option>
+                </select>
+              </label>
+
+              <label class="field-block">
+                <span>Quality</span>
+                <select id="quality" name="quality">
+                  <option value="auto">Auto</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+            </div>
+
+            <fieldset class="field-block">
+              <legend>Resolution</legend>
+              <div class="segmented-control" id="resolution-control">
+                <label><input type="radio" name="resolution" value="1k" /><span>1K</span></label>
+                <label><input type="radio" name="resolution" value="2k" checked /><span>2K</span></label>
+                <label><input type="radio" name="resolution" value="4k" /><span>4K</span></label>
+              </div>
+              <small id="computed-size">2048 × 2048</small>
+            </fieldset>
+
+            <label class="field-block">
+              <span>Format</span>
+              <select id="format" name="format">
+                <option value="png">PNG</option>
+                <option value="webp">WebP</option>
+                <option value="jpeg">JPEG</option>
+              </select>
+            </label>
+
+            <div class="form-message" id="form-message" role="alert" hidden></div>
+            <button class="primary-button" id="generate-button" type="submit">Run workflow</button>
+          </form>
+        </aside>
+      </main>
+
+      <div class="auth-gate" id="auth-gate" hidden>
+        <div class="auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+          <span class="brand-mark" aria-hidden="true">CD</span>
+          <h1 id="auth-title">Sign in through ChickenDog</h1>
+          <p>This workspace uses your existing ChickenDog account and never asks for an API key.</p>
+          <a class="primary-button" href="https://chickendog.cc/comfy">Continue to ChickenDog</a>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js"></script>
   </body>
 </html>

@@ -1,0 +1,13 @@
+{
+  "name": "chickendog-flow",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check app.js && node --check server/auth.js && node --check server/sub2api.js && node --check server/image-request.js && node --check api/sso/start.js && node --check api/auth/callback.js && node --check api/session.js && node --check api/logout.js && node --check api/images/generate.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
