@@ -23,19 +23,33 @@ Cloudflare Pages
   |  /api/* and /ws via Pages Functions service binding
   v
 Cloudflare Worker (not exposed on workers.dev)
-  |  one Durable Object per opaque browser session
+  |  ChickenDog SSO and group authorization
+  |  one Durable Object per authenticated browser session
   +-- WebSocket status and execution events
   +-- SQLite queue, settings, and the latest 100 jobs
   +-- alarm-driven serial job execution
   |
-  +--> ChickenDog.cc/v1/images/generations (gpt-image-2 only)
+  +--> ChickenDog.cc/v1/images/generations (the user's group API key)
   |
   +--> R2 (generated image bytes)
 ```
 
 Pages serves static assets without invoking a Function. `_routes.json` sends
 only `/api/*` and `/ws` through the service binding, which keeps request usage
-predictable. The ChickenDog API key exists only as a Worker secret.
+predictable. The Worker never exposes API keys to the browser.
+
+## Authentication and group access
+
+Users launch ComfyUI from the authenticated `/comfy` route on ChickenDog. The
+main site sends its short-lived bearer token to `/api/sso/start`; the Worker
+then checks `/api/v1/groups/available` and accepts only users who can bind
+`SUB2API_IMAGE_GROUP_ID`. It creates or reuses a per-user `Comfy API` key bound
+to that group and stores it inside the authenticated Durable Object session.
+
+All Comfy API routes, image reads, and WebSockets require the HttpOnly session
+cookie. Image generation is billed and rate-limited by sub2api as the signed-in
+user, and sub2api independently enforces the group's `allow_image_generation`
+setting. Sessions expire after 12 hours.
 
 ## Supported ComfyUI API
 
@@ -51,7 +65,7 @@ the model is forced to `gpt-image-2` server-side regardless of browser input.
 
 ## Local checks
 
-Node.js 20 or newer is required.
+Node.js 22 or newer is required.
 
 ```bash
 npm install
@@ -61,10 +75,11 @@ npm run build
 ```
 
 The frontend archive is about 20 MB and the extracted `dist/` directory is not
-committed. For Worker development, create `.dev.vars`:
+committed. For Worker development, copy `.dev.vars.example` to `.dev.vars` and
+set a random secret containing at least 32 characters:
 
 ```text
-CHICKENDOG_API_KEY=your_chickendog_key
+COMFY_SESSION_SECRET=replace-with-at-least-32-random-characters
 ```
 
 Then run `npm run dev:worker`. A complete same-origin local UI requires either a
@@ -80,10 +95,10 @@ npx wrangler r2 bucket create comfyui-images
 npx wrangler r2 bucket create comfyui-images-preview
 ```
 
-Store the provider credential and deploy the Worker first:
+Store the session encryption secret and deploy the Worker first:
 
 ```bash
-npx wrangler secret put CHICKENDOG_API_KEY --config wrangler.worker.jsonc
+npx wrangler secret put COMFY_SESSION_SECRET --config wrangler.worker.jsonc
 npm run deploy:worker
 ```
 
@@ -99,11 +114,13 @@ npm run deploy:pages
 Cloudflare account uses a different service or Pages project name, change those
 two config files together.
 
-After the Pages hostname is known, set `ALLOWED_ORIGIN` in
-`wrangler.worker.jsonc` to its exact origin and redeploy. This is an origin
-check, not user authentication. Before exposing a provider-funded deployment,
-protect the Pages hostname with Cloudflare Access or an equivalent identity
-policy; otherwise anyone can spend the ChickenDog API quota.
+Before deployment, configure the target group in `SUB2API_IMAGE_GROUP_ID` and
+enable `allow_image_generation` on that group in ChickenDog. An exclusive group
+requires the user to be explicitly allowed; a subscription group requires an
+active subscription. Also set `ALLOWED_ORIGIN` and `PUBLIC_ORIGIN` to the exact
+Pages or custom-domain origin. Direct visitors can load the static frontend,
+but every API and WebSocket request remains unavailable until ChickenDog SSO
+completes.
 
 ## Storage and retention
 

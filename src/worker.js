@@ -1,5 +1,13 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
+  SESSION_TTL_SECONDS,
+  assertSessionSecret,
+  consumeLoginTicket,
+  createLoginTicket,
+  expiredSessionCookie,
+  sessionCookie
+} from './auth.js'
+import {
   NODE_CLASS,
   NODE_DEFINITIONS,
   extractProviderImage,
@@ -8,8 +16,7 @@ import {
   parsePromptRequest,
   parseSessionCookie
 } from './protocol.js'
-
-const SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
+import { UpstreamError, configuredGroupId, provisionManagedUser } from './sub2api.js'
 
 export default {
   async fetch(request, env) {
@@ -20,9 +27,14 @@ export default {
         ok: true,
         provider: env.CHICKENDOG_API_BASE || 'https://chickendog.cc/v1',
         model: env.IMAGE_MODEL || 'gpt-image-2',
-        configured: Boolean(env.CHICKENDOG_API_KEY)
+        groupId: configuredGroupId(env),
+        configured: sessionSecretConfigured(env.COMFY_SESSION_SECRET)
       })
     }
+
+    if (url.pathname === '/api/sso/start') return startSSO(request, env)
+    if (url.pathname === '/api/auth/callback') return finishSSO(request, env, url)
+    if (url.pathname === '/api/logout') return logout(request, env)
 
     if (url.pathname !== '/ws' && !url.pathname.startsWith('/api/')) {
       return json({ error: 'Not found' }, 404)
@@ -36,34 +48,14 @@ export default {
       return new Response(null, { status: 204 })
     }
 
-    let sessionId = sessionFromRequest(request, url)
-    if (url.pathname === '/api/prompt' && request.method === 'POST') {
-      const body = await request.clone().json().catch(() => undefined)
-      if (isSessionId(body?.client_id)) sessionId = body.client_id
-    }
-
-    const createdSession = !sessionId
-    sessionId ||= crypto.randomUUID()
+    const sessionId = sessionFromRequest(request)
+    if (!sessionId) return authRequired()
 
     const id = env.COMFY_SESSIONS.idFromName(sessionId)
     const stub = env.COMFY_SESSIONS.get(id)
     const headers = new Headers(request.headers)
     headers.set('X-Comfy-Session', sessionId)
-    const response = await stub.fetch(new Request(request, { headers }))
-
-    if (!createdSession) return response
-
-    const responseHeaders = new Headers(response.headers)
-    responseHeaders.append(
-      'Set-Cookie',
-      `comfy_session=${encodeURIComponent(sessionId)}; Path=/; Max-Age=${SESSION_COOKIE_MAX_AGE}; HttpOnly; Secure; SameSite=Lax`
-    )
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: responseHeaders,
-      webSocket: response.webSocket
-    })
+    return stub.fetch(new Request(request, { headers }))
   }
 }
 
@@ -99,6 +91,9 @@ export class ComfySession extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url)
+    if (url.pathname === '/__bootstrap' && request.method === 'POST') return this.bootstrap(request)
+    if (url.pathname === '/__logout' && request.method === 'POST') return this.logout()
+
     const sessionId = request.headers.get('X-Comfy-Session')
     if (isSessionId(sessionId)) {
       this.sql.exec(
@@ -108,7 +103,13 @@ export class ComfySession extends DurableObject {
       )
     }
 
+    const user = this.authenticatedUser()
+    if (!user) return authRequired()
+
     try {
+      if (url.pathname === '/api/session' && request.method === 'GET') {
+        return json({ user: publicUser(user) })
+      }
       if (url.pathname === '/ws') return this.openWebSocket(request)
       if (url.pathname === '/api/object_info' && request.method === 'GET') return json(NODE_DEFINITIONS)
       if (url.pathname === `/api/object_info/${NODE_CLASS}` && request.method === 'GET') {
@@ -442,13 +443,14 @@ export class ComfySession extends DurableObject {
   }
 
   async generateImage(promptId, inputs) {
-    if (!this.env.CHICKENDOG_API_KEY) throw new Error('CHICKENDOG_API_KEY is not configured')
+    const user = this.authenticatedUser()
+    if (!user) throw new Error('Your ChickenDog session has expired')
 
     const base = (this.env.CHICKENDOG_API_BASE || 'https://chickendog.cc/v1').replace(/\/$/u, '')
     const response = await fetch(`${base}/images/generations`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.env.CHICKENDOG_API_KEY}`,
+        Authorization: `Bearer ${user.apiKey}`,
         'Content-Type': 'application/json',
         'Idempotency-Key': promptId
       },
@@ -555,11 +557,127 @@ export class ComfySession extends DurableObject {
   firstRow(query, ...params) {
     return this.rows(query, ...params)[0]
   }
+
+  async bootstrap(request) {
+    const body = await request.json().catch(() => undefined)
+    if (!isStoredUser(body?.user) || !isSessionId(body?.sessionId)) {
+      return json({ error: 'Invalid session bootstrap' }, 400)
+    }
+    this.setMetadata('session_id', body.sessionId)
+    this.setMetadata('auth_user', JSON.stringify(body.user))
+    this.setMetadata('auth_expires_at', String(Date.now() + SESSION_TTL_SECONDS * 1000))
+    return json({ ok: true })
+  }
+
+  logout() {
+    this.sql.exec("DELETE FROM metadata WHERE key IN ('auth_user', 'auth_expires_at')")
+    for (const socket of this.ctx.getWebSockets()) {
+      try {
+        socket.close(1008, 'Signed out')
+      } catch {
+        // The socket may already be closed.
+      }
+    }
+    return json({ ok: true })
+  }
+
+  authenticatedUser() {
+    const expiresAt = Number(this.firstRow("SELECT value FROM metadata WHERE key = 'auth_expires_at'")?.value)
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return undefined
+    const value = this.firstRow("SELECT value FROM metadata WHERE key = 'auth_user'")?.value
+    try {
+      const user = JSON.parse(value || '')
+      return isStoredUser(user) ? user : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  setMetadata(key, value) {
+    this.sql.exec(
+      'INSERT INTO metadata(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      key,
+      value
+    )
+  }
 }
 
-function sessionFromRequest(request, url) {
-  const clientId = url.searchParams.get('clientId')
-  if (isSessionId(clientId)) return clientId
+async function startSSO(request, env) {
+  const corsHeaders = mainSiteCorsHeaders(request, env)
+  if (!corsHeaders) return apiError('origin_not_allowed', 'This login request must come from ChickenDog.', 403)
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders })
+  if (request.method !== 'POST') {
+    return withHeaders(apiError('method_not_allowed', 'Method not allowed.', 405), corsHeaders)
+  }
+
+  const token = bearerToken(request)
+  if (!token) {
+    return withHeaders(apiError('auth_required', 'Log in to ChickenDog first.', 401), corsHeaders)
+  }
+
+  try {
+    assertSessionSecret(env.COMFY_SESSION_SECRET)
+    const user = await provisionManagedUser(token, env)
+    const ticket = await createLoginTicket(user, env.COMFY_SESSION_SECRET)
+    const redirectUrl = new URL('/api/auth/callback', publicOrigin(env))
+    redirectUrl.searchParams.set('ticket', ticket)
+    return withHeaders(json({ redirectUrl: redirectUrl.toString() }), corsHeaders)
+  } catch (error) {
+    const status = error instanceof UpstreamError ? error.status : 503
+    const code = error instanceof UpstreamError ? error.code : 'configuration_error'
+    return withHeaders(apiError(code, errorMessage(error), status), corsHeaders)
+  }
+}
+
+async function finishSSO(request, env, url) {
+  if (request.method !== 'GET') return apiError('method_not_allowed', 'Method not allowed.', 405)
+
+  const target = new URL('/', publicOrigin(env))
+  const headers = new Headers({
+    'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer'
+  })
+  try {
+    const user = await consumeLoginTicket(url.searchParams.get('ticket') || '', env.COMFY_SESSION_SECRET)
+    const sessionId = crypto.randomUUID()
+    const id = env.COMFY_SESSIONS.idFromName(sessionId)
+    const response = await env.COMFY_SESSIONS.get(id).fetch('https://comfy.internal/__bootstrap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, user })
+    })
+    if (!response.ok) throw new Error('Could not initialize the Comfy session')
+    headers.set('Set-Cookie', sessionCookie(sessionId))
+  } catch {
+    target.searchParams.set('auth_error', 'expired_ticket')
+    headers.set('Set-Cookie', expiredSessionCookie())
+  }
+  headers.set('Location', target.toString())
+  return new Response(null, { status: 302, headers })
+}
+
+async function logout(request, env) {
+  if (request.method !== 'POST') return apiError('method_not_allowed', 'Method not allowed.', 405)
+  if (!originAllowed(request, env.ALLOWED_ORIGIN)) {
+    return apiError('origin_not_allowed', 'Origin not allowed.', 403)
+  }
+
+  const sessionId = sessionFromRequest(request)
+  if (sessionId) {
+    const id = env.COMFY_SESSIONS.idFromName(sessionId)
+    await env.COMFY_SESSIONS.get(id).fetch('https://comfy.internal/__logout', { method: 'POST' })
+  }
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'application/json; charset=utf-8',
+      'Set-Cookie': expiredSessionCookie()
+    }
+  })
+}
+
+function sessionFromRequest(request) {
   const cookie = parseSessionCookie(request.headers.get('Cookie'))
   return isSessionId(cookie) ? cookie : undefined
 }
@@ -568,6 +686,83 @@ function originAllowed(request, allowedOrigin) {
   if (!allowedOrigin) return true
   const origin = request.headers.get('Origin')
   return !origin || origin === allowedOrigin
+}
+
+function mainSiteCorsHeaders(request, env) {
+  const origin = request.headers.get('Origin')
+  const allowed = normalizedOrigin(env.MAIN_APP_ORIGIN || 'https://chickendog.cc')
+  if (!origin || origin !== allowed) return undefined
+  return {
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Max-Age': '600',
+    Vary: 'Origin'
+  }
+}
+
+function publicOrigin(env) {
+  return normalizedOrigin(env.PUBLIC_ORIGIN || env.ALLOWED_ORIGIN || 'https://comfyui-gpt-image.pages.dev')
+}
+
+function sessionSecretConfigured(secret) {
+  try {
+    assertSessionSecret(secret)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function normalizedOrigin(value) {
+  return new URL(value).origin
+}
+
+function bearerToken(request) {
+  const match = request.headers.get('Authorization')?.match(/^Bearer\s+(.+)$/iu)
+  return match?.[1]?.trim() || ''
+}
+
+function isStoredUser(value) {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      typeof value.userId === 'string' &&
+      value.userId &&
+      typeof value.apiKey === 'string' &&
+      value.apiKey &&
+      Number.isInteger(value.groupId) &&
+      value.groupId > 0
+  )
+}
+
+function publicUser(user) {
+  return {
+    userId: user.userId,
+    email: typeof user.email === 'string' ? user.email : '',
+    displayName: typeof user.displayName === 'string' ? user.displayName : '',
+    role: user.role === 'admin' ? 'admin' : 'user',
+    groupId: user.groupId
+  }
+}
+
+function authRequired() {
+  return apiError('auth_required', 'Log in from ChickenDog before opening this workflow.', 401)
+}
+
+function apiError(code, message, status) {
+  return json({ error: { code, message } }, status)
+}
+
+function withHeaders(response, headers) {
+  const merged = new Headers(response.headers)
+  for (const [name, value] of Object.entries(headers)) merged.set(name, value)
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: merged
+  })
 }
 
 function staticApiResponse(url, method) {

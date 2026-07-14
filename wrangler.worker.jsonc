@@ -29,7 +29,11 @@
     "ALLOWED_ORIGIN": "https://comfyui-gpt-image.pages.dev",
     "CHICKENDOG_API_BASE": "https://chickendog.cc/v1",
     "IMAGE_MODEL": "gpt-image-2",
+    "MAIN_APP_ORIGIN": "https://chickendog.cc",
     "MAX_HISTORY": "100",
-    "MAX_QUEUE": "3"
+    "MAX_QUEUE": "3",
+    "PUBLIC_ORIGIN": "https://comfyui-gpt-image.pages.dev",
+    "SUB2API_BASE_URL": "https://chickendog.cc",
+    "SUB2API_IMAGE_GROUP_ID": "14"
   }
 }
