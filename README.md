@@ -32,3 +32,5 @@ npm test
 ```
 
 Use `vercel dev` when testing the serverless routes locally.
+
+`GET /api/health` reports whether the required session secret is configured without exposing its value.
