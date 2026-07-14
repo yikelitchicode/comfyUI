@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "comfyui-gpt-image",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-07-14",
+  "services": [
+    {
+      "binding": "API",
+      "service": "comfyui-gpt-image-api"
+    }
+  ]
+}

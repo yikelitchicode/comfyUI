@@ -1,1 +1,6 @@
-.vercel
+node_modules/
+dist/
+.cache/
+.wrangler/
+.dev.vars
+*.log

@@ -1,13 +1,22 @@
 {
-  "name": "chickendog-flow",
+  "name": "comfyui-cloudflare-gpt-image",
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "description": "Official ComfyUI frontend with a Cloudflare-native GPT Image 2 backend",
   "scripts": {
-    "check": "node --check app.js && node --check server/auth.js && node --check server/sub2api.js && node --check server/image-request.js && node --check api/health.js && node --check api/sso/start.js && node --check api/auth/callback.js && node --check api/session.js && node --check api/logout.js && node --check api/images/generate.js",
-    "test": "node --test tests/*.test.js"
+    "build": "node scripts/fetch-frontend.mjs",
+    "check": "node --check src/protocol.js && node --check src/worker.js && node --check functions/api/[[path]].js && node --check functions/ws.js && node --check frontend/gpt-image.js",
+    "test": "node --test tests/*.test.js",
+    "dev:worker": "wrangler dev --config wrangler.worker.jsonc",
+    "deploy:worker": "wrangler deploy --config wrangler.worker.jsonc",
+    "deploy:pages": "npm run build && wrangler pages deploy dist"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "extract-zip": "^2.0.1",
+    "wrangler": "^4.24.3"
   }
 }

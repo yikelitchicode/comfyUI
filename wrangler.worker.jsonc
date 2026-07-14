@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "comfyui-gpt-image-api",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-07-14",
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "COMFY_SESSIONS",
+        "class_name": "ComfySession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ComfySession"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "IMAGES",
+      "bucket_name": "comfyui-images",
+      "preview_bucket_name": "comfyui-images-preview"
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGIN": "https://comfyui-gpt-image.pages.dev",
+    "CHICKENDOG_API_BASE": "https://chickendog.cc/v1",
+    "IMAGE_MODEL": "gpt-image-2",
+    "MAX_HISTORY": "100",
+    "MAX_QUEUE": "3"
+  }
+}
