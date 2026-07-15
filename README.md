@@ -1,8 +1,9 @@
 # ComfyUI on Cloudflare with GPT Image 2
 
 This repository runs the official ComfyUI browser interface without Python,
-PyTorch, a GPU, checkpoints, or custom-node execution. The only executable node
-is `GPT Image 2`, backed by the OpenAI-compatible ChickenDog endpoint at
+PyTorch, a GPU, checkpoints, or third-party custom-node execution. A controlled
+JavaScript node registry executes text composition and GPT Image generation as a
+validated DAG, backed by the OpenAI-compatible ChickenDog endpoint at
 `https://chickendog.cc/v1/images/generations`.
 
 The frontend build is the official
@@ -26,7 +27,7 @@ Cloudflare Worker (not exposed on workers.dev)
   |  ChickenDog SSO and group authorization
   |  one Durable Object per authenticated browser session
   +-- WebSocket status and execution events
-  +-- SQLite queue, settings, and the latest 100 jobs
+  +-- SQLite queue, artifact references, settings, and the latest 100 jobs
   +-- alarm-driven serial job execution
   |
   +--> ChickenDog.cc/v1/images/generations (the user's group API key)
@@ -56,12 +57,31 @@ setting. Sessions expire after 12 hours.
 The adapter implements the small protocol surface required by the official UI:
 
 - `/api/object_info`, `/api/prompt`, `/api/jobs`, `/api/queue`, `/api/history`
-- `/api/view`, `/api/settings`, `/api/system_stats`, `/api/extensions`
+- `/api/upload/image`, `/api/view`, `/api/settings`, `/api/system_stats`, `/api/extensions`
 - `/ws` with `status`, `execution_start`, `executing`, `executed`,
   `execution_success`, and `execution_error` events
 
-Unknown nodes are rejected. A prompt must contain exactly one `GPTImage2` node;
-the model is forced to `gpt-image-2` server-side regardless of browser input.
+Unknown nodes are rejected. Workflows may contain up to 20 registered nodes and
+must be acyclic with type-correct connections. The first node set is:
+
+- `TextPrompt` and `TextTemplate` for prompt composition
+- `LoadImage` and `MaskImage` for session-scoped R2 uploads
+- `GPTImageGenerate` for an `IMAGE` R2 reference
+- `GPTImageEdit` for one to four reference images and an optional mask
+- `PreviewImage` and `SaveImage` as output nodes
+- `GPTImage2` as a compatibility path for existing single-node workflows
+
+The model is forced to `gpt-image-2` server-side regardless of browser input.
+Nodes execute in topological order and emit standard ComfyUI WebSocket events.
+Arbitrary JavaScript, Python, and third-party custom nodes cannot be submitted.
+Image edits use multipart `image[]` fields as documented by the
+[OpenAI Image API](https://developers.openai.com/api/docs/guides/image-generation#edit-images).
+When a mask is connected, it must contain alpha and match the first reference
+image's format and dimensions.
+
+Generate and edit provider calls use image SSE streaming with one partial image.
+The Worker ignores partial output and stores only the completed image. Streaming
+also keeps long-running requests alive through the public ChickenDog edge proxy.
 
 ## Local checks
 
@@ -125,9 +145,18 @@ completes.
 ## Storage and retention
 
 Each browser session has an independent Durable Object and serial queue. A
-session can hold three pending jobs by default. SQLite retains the latest 100
-terminal jobs and R2 objects; older rows and images are deleted together. These
-limits are controlled by `MAX_QUEUE` and `MAX_HISTORY`.
+session can hold three pending jobs by default. SQLite stores workflow JSON and
+small image metadata only; node outputs pass session-scoped R2 references of the
+form `{ type, key, contentType, width, height }`. SQLite retains the latest 100
+terminal jobs and their artifact references, while R2 holds the actual bytes.
+Older rows and images are deleted together. These limits are controlled by
+`MAX_QUEUE` and `MAX_HISTORY`.
+
+Uploads accept validated PNG, JPEG, and WebP files up to 20 MiB each. A session
+retains at most 50 uploads, excluding files still referenced by queued jobs. An
+edit request may contain up to four reference images plus a mask, with a 40 MiB
+combined input limit. Logging out deletes that session's uploaded and generated
+R2 objects.
 
 Cloudflare free allowances and pricing can change. R2 currently documents 10
 GB-month of Standard storage, one million Class A operations, ten million Class
