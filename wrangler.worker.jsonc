@@ -34,6 +34,6 @@
     "MAX_QUEUE": "3",
     "PUBLIC_ORIGIN": "https://comfyui-gpt-image.pages.dev",
     "SUB2API_BASE_URL": "https://chickendog.cc",
-    "SUB2API_IMAGE_GROUP_ID": "14"
+    "SUB2API_IMAGE_GROUP_ID": "13"
   }
 }
