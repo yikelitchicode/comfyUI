@@ -5,6 +5,7 @@ import {
   NODE_CLASS,
   NODE_DEFINITIONS,
   NODE_REGISTRY,
+  SIZE_PRESETS,
   executeWorkflow,
   extractProviderImage,
   imageMediaType,
@@ -39,11 +40,54 @@ test('builds ComfyUI definitions from the controlled node registry', () => {
   assert.equal(NODE_DEFINITIONS.GPTImageGenerate.output[0], 'IMAGE')
   assert.equal(NODE_DEFINITIONS.GPTImageGenerate.input.required.prompt[1].forceInput, true)
   assert.equal(NODE_DEFINITIONS.GPTImageGenerate.input.required.batch_size[1].max, 4)
+  assert.equal(NODE_DEFINITIONS.GPTImageGenerate.input.required.custom_size[1].default, '')
+  assert.ok(NODE_DEFINITIONS.GPTImageGenerate.input.required.size[0].includes('1080x1080 (IG Post)'))
+  assert.ok(NODE_DEFINITIONS.GPTImageGenerate.input.required.size[0].includes('2480x3508 (A4 Poster, 300 DPI)'))
   assert.deepEqual(NODE_DEFINITIONS.PreviewImage.output, ['IMAGE'])
   assert.deepEqual(NODE_DEFINITIONS.SaveImage.output, ['IMAGE'])
   assert.deepEqual(NODE_DEFINITIONS[NODE_CLASS].output, ['IMAGE'])
   assert.equal(NODE_DEFINITIONS.PreviewImage.output_node, true)
   assert.equal(NODE_DEFINITIONS.SaveImage.output_node, true)
+})
+
+test('accepts labelled size presets and custom image dimensions for generation and edits', () => {
+  const preset = parsePromptRequest(
+    request({
+      '1': generation({ size: '1200x1300 (12:13 custom ratio)' }),
+      '2': { class_type: 'PreviewImage', inputs: { image: ['1', 0] } }
+    })
+  )
+  assert.equal(preset.ok, true)
+  assert.equal(preset.value.graph['1'].inputs.size, SIZE_PRESETS['1200x1300 (12:13 custom ratio)'])
+
+  const poster = parsePromptRequest(
+    request({
+      '1': generation({ size: '2926x4096 (50x70 cm Poster)' }),
+      '2': { class_type: 'PreviewImage', inputs: { image: ['1', 0] } }
+    })
+  )
+  assert.equal(poster.ok, true)
+  assert.equal(poster.value.graph['1'].inputs.size, SIZE_PRESETS['2926x4096 (50x70 cm Poster)'])
+
+  const custom = parsePromptRequest(
+    request({
+      '1': {
+        class_type: 'GPTImageEdit',
+        inputs: {
+          prompt: 'Extend the image',
+          image_1: ['2', 0],
+          size: '1024x1024',
+          custom_size: '1440x1800',
+          quality: 'auto',
+          output_format: 'png'
+        }
+      },
+      '2': { class_type: 'LoadImage', inputs: { image: 'reference_12345678.png' } },
+      '3': { class_type: 'PreviewImage', inputs: { image: ['1', 0] } }
+    })
+  )
+  assert.equal(custom.ok, true)
+  assert.equal(custom.value.graph['1'].inputs.size, '1440x1800')
 })
 
 test('keeps legacy GPTImage2 prompts executable', () => {

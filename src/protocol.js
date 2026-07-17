@@ -1,7 +1,7 @@
 export const NODE_CLASS = 'GPTImage2'
 export const MAX_WORKFLOW_NODES = 20
 
-export const VALID_SIZES = new Set([
+const STANDARD_SIZES = [
   '1024x1024',
   '1024x576',
   '576x1024',
@@ -23,7 +23,24 @@ export const VALID_SIZES = new Set([
   '2160x2880',
   '3264x2176',
   '2176x3264'
-])
+]
+
+export const SIZE_PRESETS = Object.freeze({
+  '1200x1300 (12:13 custom ratio)': '1200x1300',
+  '1240x1754 (A4 portrait)': '1240x1754',
+  '1754x1240 (A4 landscape)': '1754x1240',
+  '1080x1080 (IG Post)': '1080x1080',
+  '1080x1350 (IG Portrait)': '1080x1350',
+  '1080x1920 (IG Story)': '1080x1920',
+  '2480x3508 (A4 Poster, 300 DPI)': '2480x3508',
+  '2896x4096 (A3 Poster, max quality)': '2896x4096',
+  '2048x3072 (2:3 Poster)': '2048x3072',
+  '2926x4096 (50x70 cm Poster)': '2926x4096',
+  '2160x2880 (3:4 Poster)': '2160x2880'
+})
+
+export const VALID_SIZES = new Set([...STANDARD_SIZES, ...Object.values(SIZE_PRESETS)])
+export const SIZE_OPTIONS = [...STANDARD_SIZES, ...Object.keys(SIZE_PRESETS)]
 
 export const VALID_QUALITIES = new Set(['auto', 'low', 'medium', 'high'])
 export const VALID_FORMATS = new Set(['png', 'webp', 'jpeg'])
@@ -54,10 +71,16 @@ function definition(name, displayName, required, output, options = {}) {
 }
 
 const generationOptions = {
-  size: [[...VALID_SIZES], { default: '1024x1024' }],
+  size: [SIZE_OPTIONS, { default: '1024x1024' }],
   quality: [[...VALID_QUALITIES], { default: 'auto' }],
   output_format: [[...VALID_FORMATS], { default: 'png' }],
-  batch_size: ['INT', { default: 1, min: 1, max: 4, step: 1 }]
+  batch_size: ['INT', { default: 1, min: 1, max: 4, step: 1 }],
+  custom_size: ['STRING', {
+    default: '',
+    multiline: false,
+    dynamicPrompts: false,
+    placeholder: 'Optional: widthxheight, e.g. 1200x1300 (overrides size preset)'
+  }]
 }
 
 const generationDefinition = definition('GPTImageGenerate', 'GPT Image Generate', {
@@ -261,6 +284,8 @@ export function parsePromptRequest(body) {
 
     }
 
+    normalizeGenerationSize(node.inputs)
+
     for (const [inputName, inputDefinition] of Object.entries(inputDefinitions)) {
       if (!(inputName in node.inputs)) continue
       const input = node.inputs[inputName]
@@ -370,8 +395,8 @@ function validateTextTemplate(inputs) {
 function validateGeneration(inputs) {
   const errors = []
   if (!isConnection(inputs.prompt)) errors.push(...validateString(inputs.prompt, 'Prompt', 1, 8000))
-  if (typeof inputs.size !== 'string' || !VALID_SIZES.has(inputs.size)) {
-    errors.push('The selected image size is not supported.')
+  if (typeof inputs.size !== 'string' || !isValidCustomSize(inputs.size)) {
+    errors.push('Image size must be a supported preset or a custom widthxheight value between 256 and 4096 pixels.')
   }
   if (typeof inputs.quality !== 'string' || !VALID_QUALITIES.has(inputs.quality)) {
     errors.push('The selected quality is not supported.')
@@ -383,6 +408,26 @@ function validateGeneration(inputs) {
     errors.push('Image count must be between 1 and 4.')
   }
   return errors
+}
+
+function normalizeGenerationSize(inputs) {
+  if (!inputs || typeof inputs !== 'object') return
+  const customSize = typeof inputs.custom_size === 'string' ? inputs.custom_size.trim() : ''
+  if (customSize) {
+    inputs.size = customSize
+    return
+  }
+  const size = SIZE_PRESETS[inputs.size] || inputs.size
+  if (typeof size === 'string') inputs.size = size
+}
+
+function isValidCustomSize(size) {
+  if (VALID_SIZES.has(size)) return true
+  const match = /^(\d{2,5})x(\d{2,5})$/u.exec(size)
+  if (!match) return false
+  const width = Number(match[1])
+  const height = Number(match[2])
+  return width >= 256 && width <= 4096 && height >= 256 && height <= 4096 && width * height <= 16_777_216
 }
 
 function validateImageEdit(inputs) {
